@@ -9,6 +9,7 @@
 """
 
 
+import asyncio
 import serial
 import socket
 import usb.core
@@ -39,7 +40,7 @@ class Usb(Escpos):
         in_ep=0x82,
         out_ep=0x01,
         *args,
-        **kwargs
+        **kwargs,
     ):  # noqa: N803
         """
         :param idVendor: Vendor ID
@@ -142,7 +143,7 @@ class Serial(Escpos):
         xonxoff=False,
         dsrdtr=True,
         *args,
-        **kwargs
+        **kwargs,
     ):
         """
 
@@ -325,6 +326,75 @@ class File(Escpos):
         if self.device is not None:
             self.device.flush()
             self.device.close()
+
+
+class Bluetooth(Escpos):
+    """Bluetooth (BLE) printer
+
+    This class can attach to a Bluetooth printer using the `bleak` library.
+
+    Note that the Bluetooh communication uses asyncio, so your program needs to
+    wait for all commands to be sent, e.g.:
+
+    .. code-block:: python
+
+            import bleak, asyncio, escpos
+
+            async def main():
+                async with bleak.BleakClient(device_address) as client:
+                    p = escpos.printer.Bluetooth(client, characteristic)
+                    p.text('Test print')
+                    p.qr('https://github.com/python-escpos/python-escpos')
+                    # ... more commands ...
+                    await p.close()
+
+            asyncio.run(main())
+
+    It is also possible to wait on p.done() if you want to keep the connect
+    open to do multiple prints.
+    """
+
+    def __init__(self, bleak_client, bt_characteristic, *args, **kwargs):
+        """
+        :param bleak_client: Client (from BleakClient(address) constructor)
+        :param bt_characteristic: Bluetooth characteristic to write ESC commands
+        """
+        Escpos.__init__(self, *args, **kwargs)
+        self._bleak_client = bleak_client
+        self._bt_characteristic = bt_characteristic
+        self._output_queue = asyncio.Queue()
+        self._dispatcher_task = asyncio.create_task(self._dispatcher())
+
+    def done(self):
+        """Returns the dispatcher loop task that sends commands to the printer
+        Await this to leave the connection open waiting for more commands.
+        Suitable for being run from a server or long running program.
+        """
+        return self._dispatcher_task
+
+    def close(self):
+        """Close the connection once everything on the queue is sent.
+        Returns the dispatcher loop task. Await this if you want to send all
+        queued commands and then exit (i.e. in a script or similar).
+        """
+        self._output_queue.put_nowait(Bluetooth.done)
+        return self.done()
+
+    def _raw(self, msg):
+        """Put command on the queue to be sent to the printer
+        :param msg:	arbitrary code to be printed
+        :type msg: bytes
+        """
+        self._output_queue.put_nowait(msg)
+
+    async def _dispatcher(self):
+        while buf := await self._output_queue.get():
+            if buf is Bluetooth.done:
+                await self._bleak_client.disconnect()
+                return
+            await self._bleak_client.write_gatt_char(
+                self._bt_characteristic, buf, response=True
+            )
 
 
 class Dummy(Escpos):
