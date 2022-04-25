@@ -23,7 +23,8 @@ async def list_characteristics(args, find=None):
         for _, c in services.characteristics.items():
             if find and (find in c.properties):
                 return c.handle
-            print(c, c.properties)
+            elif not find:
+                print(c, c.properties)
         return None
 
 
